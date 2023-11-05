@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 /* Types */
@@ -9,13 +10,13 @@ typedef struct { sc x, y, z; } vec;
 typedef int bool;
 
 /* Vectors */
-static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
-static sc magsq(vec vv)         { return dot(vv, vv); }
-static vec scale(vec vv, sc c)  { vec rv = { vv.x*c, vv.y*c, vv.z*c }; return rv; }
-static vec normalize(vec vv)    { return scale(vv, 1/sqrt(dot(vv, vv))); }
-static vec add(vec aa, vec bb)  { vec rv = { aa.x+bb.x, aa.y+bb.y, aa.z+bb.z }; return rv; }
-static vec sub(vec aa, vec bb)  { return add(aa, scale(bb, -1)); }
-static vec hadamard_product(vec aa, vec bb) { vec rv = { aa.x*bb.x, aa.y*bb.y, aa.z*bb.z }; return rv; }
+inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
+inline static sc magsq(vec vv)         { return dot(vv, vv); }
+inline static vec scale(vec vv, sc c)  { vec rv = { vv.x*c, vv.y*c, vv.z*c }; return rv; }
+inline static vec normalize(vec vv)    { return scale(vv, 1/sqrt(dot(vv, vv))); }
+inline static vec add(vec aa, vec bb)  { vec rv = { aa.x+bb.x, aa.y+bb.y, aa.z+bb.z }; return rv; }
+inline static vec sub(vec aa, vec bb)  { return add(aa, scale(bb, -1)); }
+inline static vec hadamard_product(vec aa, vec bb) { vec rv = { aa.x*bb.x, aa.y*bb.y, aa.z*bb.z }; return rv; }
 
 /* Ray-tracing types */
 typedef vec color;              // So as to reuse dot(vv,vv) and scale
@@ -26,7 +27,8 @@ typedef struct { vec start; vec dir; } ray; // dir is normalized!
 
 /* Random sampling */
 
-static sc random_double() { return rand() / (RAND_MAX + 1.0); } // [0, 1)
+static sc random_double() { 
+    return (rand() / (RAND_MAX + 1.0)); } // [0, 1)
 static vec random_vec() {
     vec v = { random_double(), random_double(), random_double() };
     return v;
@@ -47,33 +49,10 @@ static color BLACK = {0, 0, 0};
 static color WHITE = {1.0, 1.0, 1.0};
 static color BLUE = {0.25, 0.49, 1.0};
 
-static color sky_color(ray rr) {
-  sc a = 0.5 * (rr.dir.y + 1);
-  return add(scale(WHITE, 1.0-a), scale(BLUE, a));
-}
-
 static color ray_color(world here, ray rr, int depth);
 
 static vec reflect(vec incoming, vec normal) {
     return sub(incoming, scale(normal, dot(incoming,normal)*2));
-}
-
-static color surface_color(world here, sphere *obj, ray rr, vec point, int depth) {
-  if (depth <= 0) return BLACK;
-
-  vec normal = normalize(sub(point, obj->cp));
-
-  ray bounce = { point };
-  if (obj->ma.reflectivity == 0) { // Matte, regular scattering
-    bounce.dir = add(normal, random_unit_vector());
-  } else { // Reflective metal scattering
-    vec reflected = reflect(rr.dir, normal);
-    bounce.dir = add(reflected, scale(random_unit_vector(), obj->ma.fuzz));
-    if (dot(bounce.dir, normal) < 0) return BLACK;
-  }
-  if (magsq(bounce.dir) < 0.0000001) return BLACK;
-  bounce.dir = normalize(bounce.dir);
-  return hadamard_product(ray_color(here, bounce, depth-1), obj->ma.albedo);
 }
 
 static bool find_nearest_intersection(ray rr, sphere ss, sc *intersection) {
@@ -103,10 +82,28 @@ static color ray_color(world here, ray rr, int depth)
   }
 
   if (nearest_object) {
-    return surface_color(here, nearest_object, rr, add(rr.start, scale(rr.dir, nearest_t)), depth);
+    // Object color
+    vec point = add(rr.start, scale(rr.dir, nearest_t));
+    if (depth <= 0) return BLACK;
+
+    vec normal = normalize(sub(point, nearest_object->cp));
+
+    ray bounce = { point };
+    if (nearest_object->ma.reflectivity == 0) { // Matte, regular scattering
+        bounce.dir = add(normal, random_unit_vector());
+    } else { // Reflective metal scattering
+        vec reflected = reflect(rr.dir, normal);
+        bounce.dir = add(reflected, scale(random_unit_vector(), nearest_object->ma.fuzz));
+        if (dot(bounce.dir, normal) < 0) return BLACK;
+    }
+    if (magsq(bounce.dir) < 0.0000001) return BLACK;
+    bounce.dir = normalize(bounce.dir);
+    return hadamard_product(ray_color(here, bounce, depth-1), nearest_object->ma.albedo);
   }
 
-  return sky_color(rr);
+  // Sky color
+  sc a = 0.5 * (rr.dir.y + 1);
+  return add(scale(WHITE, 1.0-a), scale(BLUE, a));
 }
 
 /* PPM6 */
@@ -165,7 +162,7 @@ static void render(world here, int w, int h)
 
 int main(int argc, char **argv) {
   sc ALT = -2.0;
-  sphere ss[600] = { 
+  sphere ss[30] = { 
     { .ma = { .albedo = {0.5, 0.5, 0.5} }, .r = 1000, .cp = {0, -1000+ALT, 5} }, // Ground
     { .ma = { .albedo = {0.7, 0.7, 0.7}, .reflectivity = 1.0, .fuzz = 0.3 }, .r = 1, .cp = {-2, ALT+1.0, 5} }, // Sphere 1, reflective (fuzzier)
     { .ma = { .albedo = {0.4, 0.2, 0.1} }, .r = 1, .cp = {0, ALT+1.0, 5} }, // Sphere 2, matte brown
