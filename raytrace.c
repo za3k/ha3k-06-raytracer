@@ -148,7 +148,7 @@ static ray get_ray(int w, int h, int x, int y) {
 
 static void render(world here, int w, int h)
 {
-  int samples_per_pixel = 1000;
+  int samples_per_pixel = 100;
   int max_bounces = 50;
 
   output_header(w, h);
@@ -172,12 +172,11 @@ int main(int argc, char **argv) {
     { .ma = { .albedo = {0.5, 0.5, 0.5}, .reflectivity = 1.0, }, .r = 1, .cp = {2, ALT+1.0, 5} }, // Sphere 3, reflective
   };
   int spheres = 4;
-  for (int a=-11; a<=11; a++) {
-    for (int b=-11; b<=11; b++) {
+  for (int a=-2; a<=2; a++) {
+    for (int b=3; b<=7; b++) {
       // Add a sphere
       sc RAD = 0.2;
       vec center = { a + 0.9*random_double(), ALT+RAD, b + 0.9*random_double() };
-      if (dist(center, ss[1].cp) > 1.3 && dist(center, ss[3].cp) > 1.3) {
         ss[spheres].cp = center;
         ss[spheres].r = RAD;
         ss[spheres].ma.reflectivity = 0;
@@ -185,7 +184,6 @@ int main(int argc, char **argv) {
         ss[spheres].ma.albedo = random_color();
         ss[spheres].ma.fuzz = random_double();
         spheres++;
-      }
     }
   }
   world here = { ss, spheres };
