@@ -49,8 +49,6 @@ static color BLACK = {0, 0, 0};
 static color WHITE = {1.0, 1.0, 1.0};
 static color BLUE = {0.25, 0.49, 1.0};
 
-static color ray_color(world here, ray rr, int depth);
-
 static vec reflect(vec incoming, vec normal) {
     return sub(incoming, scale(normal, dot(incoming,normal)*2));
 }
@@ -67,43 +65,48 @@ static bool find_nearest_intersection(ray rr, sphere ss, sc *intersection) {
   return 1;
 }
 
-static color ray_color(world here, ray rr, int depth)
+static color ray_color(world here, ray rr)
 {
   sc intersection;
   sc nearest_t = 1/.0;
   sphere *nearest_object = 0;
+  color albedo = WHITE;
 
-  for (int i = 0; i < here.nn; i++) {
-    if (find_nearest_intersection(rr, here.spheres[i], &intersection)) {
-      if (intersection < 0.000001 || intersection >= nearest_t) continue;
-      nearest_t = intersection;
-      nearest_object = &here.spheres[i];
+  for (int depth = 0; depth < 50; depth++) {
+    nearest_object = 0;
+    nearest_t = 1/.0;
+    for (int i = 0; i < here.nn; i++) {
+        if (find_nearest_intersection(rr, here.spheres[i], &intersection)) {
+        if (intersection < 0.000001 || intersection >= nearest_t) continue;
+        nearest_t = intersection;
+        nearest_object = &here.spheres[i];
+        }
+    }
+
+    if (nearest_object) {
+        // Object color
+        vec point = add(rr.start, scale(rr.dir, nearest_t));
+        vec normal = normalize(sub(point, nearest_object->cp));
+
+        ray bounce = { point };
+        if (nearest_object->ma.reflectivity == 0) { // Matte, regular scattering
+            bounce.dir = add(normal, random_unit_vector());
+        } else { // Reflective metal scattering
+            vec reflected = reflect(rr.dir, normal);
+            bounce.dir = add(reflected, scale(random_unit_vector(), nearest_object->ma.fuzz));
+            if (dot(bounce.dir, normal) < 0) return BLACK;
+        }
+        if (magsq(bounce.dir) < 0.0000001) return BLACK;
+        bounce.dir = normalize(bounce.dir);
+        rr = bounce;
+        albedo = hadamard_product(albedo, nearest_object->ma.albedo);
+    } else {
+        // Sky color
+        sc a = 0.5 * (rr.dir.y + 1);
+        return hadamard_product(albedo, add(scale(WHITE, 1.0-a), scale(BLUE, a)));
     }
   }
-
-  if (nearest_object) {
-    // Object color
-    vec point = add(rr.start, scale(rr.dir, nearest_t));
-    if (depth <= 0) return BLACK;
-
-    vec normal = normalize(sub(point, nearest_object->cp));
-
-    ray bounce = { point };
-    if (nearest_object->ma.reflectivity == 0) { // Matte, regular scattering
-        bounce.dir = add(normal, random_unit_vector());
-    } else { // Reflective metal scattering
-        vec reflected = reflect(rr.dir, normal);
-        bounce.dir = add(reflected, scale(random_unit_vector(), nearest_object->ma.fuzz));
-        if (dot(bounce.dir, normal) < 0) return BLACK;
-    }
-    if (magsq(bounce.dir) < 0.0000001) return BLACK;
-    bounce.dir = normalize(bounce.dir);
-    return hadamard_product(ray_color(here, bounce, depth-1), nearest_object->ma.albedo);
-  }
-
-  // Sky color
-  sc a = 0.5 * (rr.dir.y + 1);
-  return add(scale(WHITE, 1.0-a), scale(BLUE, a));
+  return BLACK;
 }
 
 /* PPM6 */
@@ -146,7 +149,6 @@ static ray get_ray(int w, int h, int x, int y) {
 static void render(world here, int w, int h)
 {
   int samples_per_pixel = 100;
-  int max_bounces = 50;
 
   output_header(w, h);
   for (int i = 0; i < h; i++)
@@ -154,7 +156,7 @@ static void render(world here, int w, int h)
       color pixel_color = {0, 0, 0};
       for (int sample = 0; sample < samples_per_pixel; ++sample) {
         ray rr = get_ray(w, h, j, i);
-        pixel_color = add(pixel_color, ray_color(here, rr, max_bounces));
+        pixel_color = add(pixel_color, ray_color(here, rr));
       }
       encode_color(scale(pixel_color, 1.0/samples_per_pixel));
     }
