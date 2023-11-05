@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 
 /* Types */
@@ -15,7 +16,6 @@ static vec normalize(vec vv)    { return scale(vv, 1/sqrt(dot(vv, vv))); }
 static vec add(vec aa, vec bb)  { vec rv = { aa.x+bb.x, aa.y+bb.y, aa.z+bb.z }; return rv; }
 static vec sub(vec aa, vec bb)  { return add(aa, scale(bb, -1)); }
 static vec hadamard_product(vec aa, vec bb) { vec rv = { aa.x*bb.x, aa.y*bb.y, aa.z*bb.z }; return rv; }
-static sc dist(vec aa, vec bb)  { return sqrt(magsq(sub(aa,bb))); }
 
 /* Ray-tracing types */
 typedef vec color;              // So as to reuse dot(vv,vv) and scale
@@ -187,6 +187,10 @@ int main(int argc, char **argv) {
     }
   }
   world here = { ss, spheres };
+  clock_t start, stop;
+  start = clock();
   render(here, 800, 600);
+  stop = clock();
+  fprintf(stderr, "Render: %ldms\n", (stop-start)/1000);
   return 0;
 }
