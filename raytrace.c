@@ -36,7 +36,7 @@ static vec random_vec() {
 static vec random_in_unit_sphere() {
     while (1) {
         vec v = random_vec();
-        if (magsq(v) < 1) return v;
+        if (magsq(v) <= 1) return v;
     }
 }
 static vec random_unit_vector() { return normalize(random_in_unit_sphere()); }
@@ -68,8 +68,8 @@ static bool find_nearest_intersection(ray rr, sphere ss, sc *intersection) {
 static color ray_color(world here, ray rr)
 {
   sc intersection;
-  sc nearest_t = 1/.0;
-  sphere *nearest_object = 0;
+  sc nearest_t;
+  sphere *nearest_object;
   color albedo = WHITE;
 
   for (int depth = 0; depth < 50; depth++) {
@@ -146,10 +146,8 @@ static ray get_ray(int w, int h, int x, int y) {
   return rr;
 }
 
-static void render(world here, int w, int h)
+static void render(world here, int w, int h, int samples_per_pixel)
 {
-  int samples_per_pixel = 100;
-
   output_header(w, h);
   for (int i = 0; i < h; i++)
     for (int j = 0; j < w; j++) {
@@ -162,33 +160,48 @@ static void render(world here, int w, int h)
     }
 }
 
-int main(int argc, char **argv) {
+void scene(world *here) {
   sc ALT = -2.0;
-  sphere ss[30] = { 
-    { .ma = { .albedo = {0.5, 0.5, 0.5} }, .r = 1000, .cp = {0, -1000+ALT, 5} }, // Ground
-    { .ma = { .albedo = {0.7, 0.7, 0.7}, .reflectivity = 1.0, .fuzz = 0.3 }, .r = 1, .cp = {-2, ALT+1.0, 5} }, // Sphere 1, reflective (fuzzier)
-    { .ma = { .albedo = {0.4, 0.2, 0.1} }, .r = 1, .cp = {0, ALT+1.0, 5} }, // Sphere 2, matte brown
-    { .ma = { .albedo = {0.5, 0.5, 0.5}, .reflectivity = 1.0, }, .r = 1, .cp = {2, ALT+1.0, 5} }, // Sphere 3, reflective
-  };
-  int spheres = 4;
+  // Ground
+  sphere ground = { .ma = { .albedo = {0.5, 0.5, 0.5} }, .r = 1000, .cp = {0, -1000+ALT, 5} };
+  // Sphere 1, reflective (fuzzier)
+  sphere sphere1 = { .ma = { .albedo = {0.7, 0.7, 0.7}, .reflectivity = 1.0, .fuzz = 0.3 }, .r = 1, .cp = {-2, ALT+1.0, 5} };
+  // Sphere 2, matte brown
+  sphere sphere2 = { .ma = { .albedo = {0.4, 0.2, 0.1} }, .r = 1, .cp = {0, ALT+1.0, 5} };
+  // Sphere 3, reflective
+  sphere sphere3 = { .ma = { .albedo = {0.5, 0.5, 0.5}, .reflectivity = 1.0, }, .r = 1, .cp = {2, ALT+1.0, 5} };
+
+  here->spheres[here->nn++] = ground;
+  here->spheres[here->nn++] = sphere1;
+  here->spheres[here->nn++] = sphere2;
+  here->spheres[here->nn++] = sphere3;
+
   for (int a=-2; a<=2; a++) {
     for (int b=3; b<=7; b++) {
       // Add a sphere
       sc RAD = 0.2;
-      vec center = { a + 0.9*random_double(), ALT+RAD, b + 0.9*random_double() };
-        ss[spheres].cp = center;
-        ss[spheres].r = RAD;
-        ss[spheres].ma.reflectivity = 0;
-        ss[spheres].ma.reflectivity = random_double() > 0.8;
-        ss[spheres].ma.albedo = random_color();
-        ss[spheres].ma.fuzz = random_double();
-        spheres++;
+      sphere new = {
+        .cp = { a + 0.9*random_double(), ALT+RAD, b + 0.9*random_double() },
+        .r = RAD,
+        .ma = {
+          .reflectivity = random_double() > 0.8,
+          .albedo = random_color(),
+          .fuzz = random_double(),
+        },
+      };
+      here->spheres[here->nn++] = new;
     }
   }
-  world here = { ss, spheres };
+}
+
+int main(int argc, char **argv) {
+  sphere ss[30];
+  world here = { ss, 0 };
+  scene(&here);
+
   clock_t start, stop;
   start = clock();
-  render(here, 800, 600);
+  render(here, 800, 600, 100);
   stop = clock();
   fprintf(stderr, "Render: %ldms\n", (stop-start)/1000);
   return 0;
