@@ -132,8 +132,8 @@ __device__ static color ray_color(curandState *randstate, const world *here, ray
 /* PPM P6 file format; see <http://netpbm.sourceforge.net/doc/ppm.html> */
 
 static void
-output_header(int w, int h)
-{ printf("P6\n%d %d\n255\n", w, h); }
+output_header()
+{ printf("P6\n%d %d\n255\n", W, H); }
 
 __device__ static unsigned char
 byte(double dd) { return dd > 1 ? 255 : dd < 0 ? 0 : dd * 255 + 0.5; }
@@ -145,15 +145,15 @@ encode_color(pix p)
 /* Rendering */
 
 
-__device__ static ray get_ray(curandState *randstate, int w, int h, int x, int y) {
+__device__ static ray get_ray(curandState *randstate, int x, int y) {
   // Camera is always at 0,0
-  sc aspect = ((sc)w)/h; // Assume aspect >= 1
+  sc aspect = ((sc)W)/H; // Assume aspect >= 1
   sc viewport_height = 2.0;
   sc focal_length = 1.0; // Z distance of viewport
   sc viewport_width = viewport_height * aspect;
 
-  sc pixel_width = (viewport_width / w);
-  sc pixel_height = (viewport_height / h);
+  sc pixel_width = (viewport_width / W);
+  sc pixel_height = (viewport_height / H);
   sc left = viewport_width / -2.0;
   sc top = viewport_height / 2.0;
 
@@ -166,19 +166,19 @@ __device__ static ray get_ray(curandState *randstate, int w, int h, int x, int y
   return rr;
 }
 
-__device__ static pix render_pixel(curandState *randstate, const world *here, int w, int h, int samples, int x, int y)
+__device__ static pix render_pixel(curandState *randstate, const world *here, int x, int y)
 {
   color pixel_color = {0, 0, 0};
-  for (int sample = 0; sample < samples; ++sample) {
-    ray rr = get_ray(randstate, w, h, x, y);
+  for (int sample = 0; sample < SAMPLES; ++sample) {
+    ray rr = get_ray(randstate, x, y);
     pixel_color = add(pixel_color, ray_color(randstate, here, rr));
   }
-  pixel_color = scale(pixel_color, 1.0/samples);
+  pixel_color = scale(pixel_color, 1.0/SAMPLES);
   pix p = { byte(sqrt(pixel_color.x)), byte(sqrt(pixel_color.y)), byte(sqrt(pixel_color.z)) }; 
   return p;
 }
 
-__global__ void render_pixels(curandState *randstate, const world *here, int w, int h, int samples, pix *result)
+__global__ void render_pixels(curandState *randstate, const world *here, pix *result)
 {
   // COPY world + randstate
 
@@ -189,12 +189,11 @@ __global__ void render_pixels(curandState *randstate, const world *here, int w, 
   curandState state = randstate[threadIdx.x];
 
   if (idx < PIXELS) {
-    result[y*W+x] = render_pixel(&state, here, w, h, samples, x, y);
+    result[y*W+x] = render_pixel(&state, here, x, y);
   }
 }
 
-static void render(curandState *d_randstate,
-                   world *h_here, int w, int h, int samples_per_pixel)
+static void render(curandState *d_randstate, world *h_here)
 {
   clock_t start, stop;
   start = clock();
@@ -214,7 +213,7 @@ static void render(curandState *d_randstate,
   start = stop;
 
   // Calculate the pixels
-  render_pixels<<<BLOCKS, THREADS>>>(d_randstate, d_here, w, h, samples_per_pixel, d_result);
+  render_pixels<<<BLOCKS, THREADS>>>(d_randstate, d_here, d_result);
   cudaMemcpy(h_result, d_result, PIXELS * sizeof(pix), cudaMemcpyDeviceToHost);
 
   stop = clock();
@@ -222,9 +221,9 @@ static void render(curandState *d_randstate,
   start = stop;
 
   // Print PPM
-  output_header(w, h);
-  for (int y = 0; y < h; y++)
-    for (int x = 0; x < w; x++)
+  output_header();
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++)
       encode_color(h_result[y*W+x]);
 
   stop = clock();
@@ -274,6 +273,6 @@ int main(int argc, char **argv) {
   world here = {0};
   scene(&here);
 
-  render(d_randstate, &here, W, H, SAMPLES);
+  render(d_randstate, &here);
   return 0;
 }
