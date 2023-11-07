@@ -182,14 +182,14 @@ __global__ void render_pixels(curandState *randstate, const world *here, int w, 
   // COPY world + randstate
 
   int idx = threadIdx.x + blockDim.x*blockIdx.x;
-  if (idx >= PIXELS) return;
   int x = idx % W;
   int y = idx / W;
 
-  //const world here2 = here;
-  //curandState randstate2 = randstate;
+  curandState state = randstate[threadIdx.x];
 
-  render_pixel(randstate+idx, here, w, h, samples, x, y, &result[y*W+x]);
+  if (idx < PIXELS) {
+    render_pixel(&state, here, w, h, samples, x, y, &result[y*W+x]);
+  }
 }
 
 static void render(curandState *d_randstate,
@@ -244,9 +244,9 @@ void scene(world *here) {
       s->cp.y = RAD;
       s->cp.z = b + 0.9*random_double();
       s->r = RAD;
-      s->ma.albedo = random_color();
-      s->ma.fuzz = random_double();
       s->ma.reflectivity = random_double() > 0.8;
+      s->ma.fuzz = random_double();
+      s->ma.albedo = random_color();
     }
   }
 
@@ -255,8 +255,8 @@ void scene(world *here) {
 
 int main(int argc, char **argv) {
   curandState *d_randstate;
-  cudaMalloc(&d_randstate, sizeof(curandState));
-  setup_kernel<<<BLOCKS,THREADS>>>(d_randstate);
+  cudaMalloc(&d_randstate, sizeof(curandState)*THREADS);
+  setup_kernel<<<1, 1024>>>(d_randstate);
 
   world here = {0};
   scene(&here);
