@@ -5,7 +5,10 @@
 #include <stdlib.h>
 #include <curand.h>
 #include <curand_kernel.h>
+
+extern "C" {
 #include "yeso.h"
+}
 
 #define W 400
 #define H 300
@@ -16,10 +19,12 @@
 #define THREADS 256
 #define BLOCKS (ceil(PIXELS * 1.0) / THREADS)
 
+#define ZOOM 3
+
 /* Types */
 typedef double sc; // scalar
 typedef struct { sc x, y, z; } vec;
-typedef struct { unsigned char r, g, b, a; } pix;
+typedef struct { unsigned char a, r, g, b; } pix;
 
 /* Vectors */
 __device__ inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
@@ -44,18 +49,11 @@ __global__ void setup_kernel(curandState *state){
   curand_init(1234, idx, 0, &state[idx]);
 }
 
-__host__ static sc random_double() { 
-    return (rand() / (RAND_MAX + 1.0)); } // [0, 1)
-__host__ static color random_color() {
-    vec v = { random_double(), random_double(), random_double() };
-    return v;
-}
+__host__ static sc random_double() { return (rand() / (RAND_MAX + 1.0)); } // [0, 1)
+__host__ static color random_color() { vec v = { random_double(), random_double(), random_double() }; return v; }
 
 __device__ static sc d_random_double(curandState *d_randstate) { return curand_uniform_double(d_randstate); }
-__device__ static vec d_random_vec(curandState *d_randstate) {
-    vec v = { d_random_double(d_randstate), d_random_double(d_randstate), d_random_double(d_randstate) };
-    return v;
-}
+__device__ static vec d_random_vec(curandState *d_randstate) { vec v = { d_random_double(d_randstate), d_random_double(d_randstate), d_random_double(d_randstate) }; return v; }
 __device__ static vec d_random_in_unit_sphere(curandState *d_randstate) {
     while (1) {
         vec v = d_random_vec(d_randstate);
@@ -182,7 +180,7 @@ __global__ void render_pixels(curandState *randstate, const world *here, pix *re
   }
 }
 
-static void render(curandState *d_randstate, world *h_here, ypix *yp)
+static void render(curandState *d_randstate, world *h_here, ypic fb)
 {
   // Copy the world to the GPU
   world *d_here;
@@ -197,7 +195,16 @@ static void render(curandState *d_randstate, world *h_here, ypix *yp)
   render_pixels<<<BLOCKS, THREADS>>>(d_randstate, d_here, d_result);
   pix *h_result = (pix *)malloc(sizeof(color)*PIXELS);
   cudaMemcpy(h_result, d_result, PIXELS * sizeof(pix), cudaMemcpyDeviceToHost);
-  memcpy(yp, h_result, 4*PIXELS);
+
+  for (int yy=0; yy<H; ++yy) {
+    for (int ii=0; ii<ZOOM; ++ii) {
+      for (int xx=0; xx<W; ++xx) {
+        for (int jj=0; jj<ZOOM; ++jj) {
+          memcpy(yp_pix(fb, ZOOM*xx+jj, ZOOM*yy+ii), &h_result[yy*W+xx], 4);
+        }
+      }
+    }
+  }
 }
 
 // Ground
@@ -242,17 +249,20 @@ int main(int argc, char **argv) {
   world here = {0};
   scene(&here);
 
-  ywin w = yw_open("raytracer in yeso and CUDA", W, H, "");
+  ywin w = yw_open("raytracer in yeso and CUDA", W*ZOOM, H*ZOOM, "");
   clock_t start = clock(), stop;
   start = clock();
   for (int frame=0; frame < 1000; ++frame) {
     ypic fb = yw_frame(w);
-    ypix *p = yp_pix(fb, 0, 0);
-    render(d_randstate, &here, p);
+    render(d_randstate, &here, fb);
     yw_flip(w);
+    for (int i=0; i<here.nn; i++) {
+      here.spheres[i].cp.y -= 0.005;
+    }
     stop = clock();
-    int us = (start-stop)*1.0 / frame;
-    fprintf(stderr, "Render: %ldms (%0.1f fps)\n", us/1000, 1000000.0/us);
+    int us = (stop-start)*1.0 / frame;
+    if (!(frame & 0xff))
+      fprintf(stderr, "Render: %ldms (%0.1f fps)\n", us/1000, 1000000.0/us);
   }
   return 0;
 }
