@@ -45,11 +45,10 @@ __global__ void setup_kernel(curandState *state){
 
 __host__ static sc random_double() { 
     return (rand() / (RAND_MAX + 1.0)); } // [0, 1)
-__host__ static vec random_vec() {
+__host__ static color random_color() {
     vec v = { random_double(), random_double(), random_double() };
     return v;
 }
-__host__ static color random_color() { return random_vec(); }
 
 __device__ static sc d_random_double(curandState *d_randstate) { return curand_uniform_double(d_randstate); }
 __device__ static vec d_random_vec(curandState *d_randstate) {
@@ -77,57 +76,54 @@ __device__ static vec reflect(vec incoming, vec normal) {
 __device__ static int find_nearest_intersection(ray rr, sphere ss, sc *intersection) {
   vec center_rel = sub(rr.start, ss.cp);
   // Quadratic coefficients of parametric intersection equation.  a == 1.
-  sc b = 2*dot(center_rel, rr.dir), c = magsq(center_rel) - ss.r*ss.r;
-  sc discrim = b*b - 4*c;
+  sc half_b = dot(center_rel, rr.dir);
+  sc c = magsq(center_rel) - ss.r*ss.r;
+  sc discrim = half_b*half_b - c;
   if (discrim < 0) return 0;
   sc sqdiscrim = sqrt(discrim);
-  *intersection = (-b - sqdiscrim > 0 ? (-b - sqdiscrim)/2
-                                      : (-b + sqdiscrim)/2);
+  *intersection = (-half_b - sqdiscrim > 0 ? (-half_b - sqdiscrim)
+                                           : (-half_b + sqdiscrim));
   return 1;
 }
 
 __device__ static color ray_color(curandState *randstate, const world *here, ray rr)
 {
-  sc intersection;
-  sc nearest_t;
-  const sphere *nearest_object;
   color albedo = WHITE;
 
   for (int depth = 0; depth < MAX_BOUNCES; depth++) {
-    nearest_object = 0;
-    nearest_t = 1/.0;
+    const sphere *nearest_object = 0;
+    sc nearest_t = 1/.0;
+    sc intersection;
 
     for (int i = 0; i < here->nn; i++) {
-        if (find_nearest_intersection(rr, here->spheres[i], &intersection)) {
-        if (intersection < 0.000001 || intersection >= nearest_t) continue;
+      if (find_nearest_intersection(rr, here->spheres[i], &intersection)) {
+        if (intersection < 0.00001 || intersection >= nearest_t) continue;
         nearest_t = intersection;
         nearest_object = &here->spheres[i];
-        }
+      }
     }
 
-    if (nearest_object) {
-        // Object color
-        vec point = add(rr.start, scale(rr.dir, nearest_t));
-        vec normal = normalize(sub(point, nearest_object->cp));
-        vec dir = d_random_unit_vector(randstate);
-
-        ray bounce = { point };
-        if (nearest_object->ma.reflectivity == 0) { // Matte, regular scattering
-            bounce.dir = add(normal, dir);
-        } else { // Reflective metal scattering
-            vec reflected = reflect(rr.dir, normal);
-            bounce.dir = add(reflected, scale(dir, nearest_object->ma.fuzz));
-            if (dot(bounce.dir, normal) < 0) return BLACK;
-        }
-        if (magsq(bounce.dir) < 0.0000001) return BLACK;
-        bounce.dir = normalize(bounce.dir);
-        rr = bounce;
-        albedo = hadamard_product(albedo, nearest_object->ma.albedo);
-    } else {
+    if (!nearest_object) {
         // Sky color
         sc a = 0.5 * (rr.dir.y + 1);
         return hadamard_product(albedo, add(scale(WHITE, 1.0-a), scale(BLUE, a)));
     }
+
+    // Object color
+    vec point = add(rr.start, scale(rr.dir, nearest_t));
+    vec normal = normalize(sub(point, nearest_object->cp));
+    vec dir = d_random_unit_vector(randstate);
+
+    ray bounce = { point };
+    if (nearest_object->ma.reflectivity == 0) { // Matte, regular scattering
+      bounce.dir = add(normal, dir);
+    } else { // Reflective metal scattering
+      vec reflected = reflect(rr.dir, normal);
+      bounce.dir = add(reflected, scale(dir, nearest_object->ma.fuzz * 0.99999));
+    }
+    bounce.dir = normalize(bounce.dir);
+    rr = bounce;
+    albedo = hadamard_product(albedo, nearest_object->ma.albedo);
   }
   return BLACK;
 }
@@ -170,7 +166,7 @@ __device__ static ray get_ray(curandState *randstate, int w, int h, int x, int y
   return rr;
 }
 
-__device__ static void render_pixel(curandState *randstate, const world *here, int w, int h, int samples, int x, int y, pix *result)
+__device__ static pix render_pixel(curandState *randstate, const world *here, int w, int h, int samples, int x, int y)
 {
   color pixel_color = {0, 0, 0};
   for (int sample = 0; sample < samples; ++sample) {
@@ -179,7 +175,7 @@ __device__ static void render_pixel(curandState *randstate, const world *here, i
   }
   pixel_color = scale(pixel_color, 1.0/samples);
   pix p = { byte(sqrt(pixel_color.x)), byte(sqrt(pixel_color.y)), byte(sqrt(pixel_color.z)) }; 
-  *result = p;
+  return p;
 }
 
 __global__ void render_pixels(curandState *randstate, const world *here, int w, int h, int samples, pix *result)
@@ -193,7 +189,7 @@ __global__ void render_pixels(curandState *randstate, const world *here, int w, 
   curandState state = randstate[threadIdx.x];
 
   if (idx < PIXELS) {
-    render_pixel(&state, here, w, h, samples, x, y, &result[y*W+x]);
+    result[y*W+x] = render_pixel(&state, here, w, h, samples, x, y);
   }
 }
 
