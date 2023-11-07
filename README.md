@@ -7,4 +7,4 @@ aytracer written by [kragen](http://canonical.org/~kragen/sw/aspmisc/my-very-fir
 ---
 (Day 03): Write basic raytracer
 
-Fix reference image. Initial render takes 18.8s.
+Fix reference image. Initial render takes 14.1s.

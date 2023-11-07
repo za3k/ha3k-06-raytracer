@@ -1,1 +1,2 @@
-raytrace
+raytrace-cpu
+raytrace-cuda
