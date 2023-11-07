@@ -179,12 +179,17 @@ __device__ static void render_pixel(curandState *randstate, const world *here, i
 
 __global__ void render_pixels(curandState *randstate, const world *here, int w, int h, int samples, color *result)
 {
+  // COPY world + randstate
+
   int idx = threadIdx.x + blockDim.x*blockIdx.x;
   if (idx >= PIXELS) return;
   int x = idx % W;
   int y = idx / W;
 
-  render_pixel(randstate, here, w, h, samples, x, y, &result[y*W+x]);
+  //const world here2 = here;
+  //curandState randstate2 = randstate;
+
+  render_pixel(randstate+idx, here, w, h, samples, x, y, &result[y*W+x]);
 }
 
 static void render(curandState *d_randstate,
@@ -240,8 +245,8 @@ void scene(world *here) {
       s->cp.z = b + 0.9*random_double();
       s->r = RAD;
       s->ma.albedo = random_color();
-      s->ma.reflectivity = random_double() > 0.8;
       s->ma.fuzz = random_double();
+      s->ma.reflectivity = random_double() > 0.8;
     }
   }
 
@@ -251,7 +256,7 @@ void scene(world *here) {
 int main(int argc, char **argv) {
   curandState *d_randstate;
   cudaMalloc(&d_randstate, sizeof(curandState));
-  setup_kernel<<<1,W>>>(d_randstate);
+  setup_kernel<<<BLOCKS,THREADS>>>(d_randstate);
 
   world here = {0};
   scene(&here);

@@ -8,3 +8,5 @@ aytracer written by [kragen](http://canonical.org/~kragen/sw/aspmisc/my-very-fir
 (Day 03): Write basic raytracer
 
 Fix reference image. Initial render takes 14.1s.
+Add CUDA support. Base render is now 621ms (1.6 fps) with no changes except to RNG.
+Fix RNG. 102ms (9.8fps)
