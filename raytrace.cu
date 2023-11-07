@@ -5,11 +5,12 @@
 #include <stdlib.h>
 #include <curand.h>
 #include <curand_kernel.h>
+#include "yeso.h"
 
-#define W 800
-#define H 600
+#define W 400
+#define H 300
 #define MAX_OBJECTS 30
-#define SAMPLES 100
+#define SAMPLES 40
 #define MAX_BOUNCES 5
 #define PIXELS (W*H)
 #define THREADS 256
@@ -18,7 +19,7 @@
 /* Types */
 typedef double sc; // scalar
 typedef struct { sc x, y, z; } vec;
-typedef struct { unsigned char r, g, b; } pix;
+typedef struct { unsigned char r, g, b, a; } pix;
 
 /* Vectors */
 __device__ inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
@@ -128,22 +129,10 @@ __device__ static color ray_color(curandState *randstate, const world *here, ray
   return BLACK;
 }
 
-/* PPM6 */
-/* PPM P6 file format; see <http://netpbm.sourceforge.net/doc/ppm.html> */
-
-static void
-output_header()
-{ printf("P6\n%d %d\n255\n", W, H); }
+/* Rendering */
 
 __device__ static unsigned char
 byte(double dd) { return dd > 1 ? 255 : dd < 0 ? 0 : dd * 255 + 0.5; }
-
-static void
-encode_color(pix p)
-{ putchar(p.r); putchar(p.g); putchar(p.b); }
-
-/* Rendering */
-
 
 __device__ static ray get_ray(curandState *randstate, int x, int y) {
   // Camera is always at 0,0
@@ -193,11 +182,8 @@ __global__ void render_pixels(curandState *randstate, const world *here, pix *re
   }
 }
 
-static void render(curandState *d_randstate, world *h_here)
+static void render(curandState *d_randstate, world *h_here, ypix *yp)
 {
-  clock_t start, stop;
-  start = clock();
-
   // Copy the world to the GPU
   world *d_here;
   cudaMalloc(&d_here, sizeof(world));
@@ -205,30 +191,13 @@ static void render(curandState *d_randstate, world *h_here)
 
   // Allocate space for the result
   pix *d_result;
-  pix *h_result = (pix *)malloc(sizeof(color)*PIXELS);
   cudaMalloc(&d_result, sizeof(pix)*PIXELS);
-
-  stop = clock();
-  //fprintf(stderr, "Alloc: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
-  start = stop;
 
   // Calculate the pixels
   render_pixels<<<BLOCKS, THREADS>>>(d_randstate, d_here, d_result);
+  pix *h_result = (pix *)malloc(sizeof(color)*PIXELS);
   cudaMemcpy(h_result, d_result, PIXELS * sizeof(pix), cudaMemcpyDeviceToHost);
-
-  stop = clock();
-  fprintf(stderr, "Render: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
-  start = stop;
-
-  // Print PPM
-  output_header();
-  for (int y = 0; y < H; y++)
-    for (int x = 0; x < W; x++)
-      encode_color(h_result[y*W+x]);
-
-  stop = clock();
-  //fprintf(stderr, "PPM: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
-  start = stop;
+  memcpy(yp, h_result, 4*PIXELS);
 }
 
 // Ground
@@ -273,6 +242,17 @@ int main(int argc, char **argv) {
   world here = {0};
   scene(&here);
 
-  render(d_randstate, &here);
+  ywin w = yw_open("raytracer in yeso and CUDA", W, H, "");
+  clock_t start = clock(), stop;
+  start = clock();
+  for (int frame=0; frame < 1000; ++frame) {
+    ypic fb = yw_frame(w);
+    ypix *p = yp_pix(fb, 0, 0);
+    render(d_randstate, &here, p);
+    yw_flip(w);
+    stop = clock();
+    int us = (start-stop)*1.0 / frame;
+    fprintf(stderr, "Render: %ldms (%0.1f fps)\n", us/1000, 1000000.0/us);
+  }
   return 0;
 }
