@@ -8,57 +8,72 @@
 
 #define W 800
 #define H 600
-#define S 100
+#define MAX_OBJECTS 30
+#define SAMPLES 100
+#define MAX_BOUNCES 50
+#define PIXELS (W*H)
+#define THREADS 100
+#define BLOCKS (ceil(PIXELS * 1.0) / THREADS)
 
 /* Types */
 typedef double sc; // scalar
 typedef struct { sc x, y, z; } vec;
 
 /* Vectors */
-inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
-inline static sc magsq(vec vv)         { return dot(vv, vv); }
-inline static vec scale(vec vv, sc c)  { vec rv = { vv.x*c, vv.y*c, vv.z*c }; return rv; }
-inline static vec normalize(vec vv)    { return scale(vv, 1/sqrt(dot(vv, vv))); }
-inline static vec add(vec aa, vec bb)  { vec rv = { aa.x+bb.x, aa.y+bb.y, aa.z+bb.z }; return rv; }
-inline static vec sub(vec aa, vec bb)  { return add(aa, scale(bb, -1)); }
-inline static vec hadamard_product(vec aa, vec bb) { vec rv = { aa.x*bb.x, aa.y*bb.y, aa.z*bb.z }; return rv; }
+__host__ __device__ inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
+__host__ __device__ inline static sc magsq(vec vv)         { return dot(vv, vv); }
+__host__ __device__ inline static vec scale(vec vv, sc c)  { vec rv = { vv.x*c, vv.y*c, vv.z*c }; return rv; }
+__host__ __device__ inline static vec normalize(vec vv)    { return scale(vv, 1/sqrt(dot(vv, vv))); }
+__host__ __device__ inline static vec add(vec aa, vec bb)  { vec rv = { aa.x+bb.x, aa.y+bb.y, aa.z+bb.z }; return rv; }
+__host__ __device__ inline static vec sub(vec aa, vec bb)  { return add(aa, scale(bb, -1)); }
+__host__ __device__ inline static vec hadamard_product(vec aa, vec bb) { vec rv = { aa.x*bb.x, aa.y*bb.y, aa.z*bb.z }; return rv; }
 
 /* Ray-tracing types */
 typedef vec color;              // So as to reuse dot(vv,vv) and scale
 typedef struct { color albedo; sc reflectivity; sc fuzz; } material;
 typedef struct { vec cp; material ma; sc r; } sphere;
-typedef struct { sphere *spheres; int nn; } world;
+typedef struct { sphere spheres[MAX_OBJECTS]; int nn; } world;
 typedef struct { vec start; vec dir; } ray; // dir is normalized!
 
 /* Random sampling */
 
-static sc random_double() { 
+__global__ void setup_kernel(curandState *state){
+  int idx = threadIdx.x+blockDim.x*blockIdx.x;
+  curand_init(1234, idx, 0, &state[idx]);
+}
+
+__host__ static sc random_double() { 
     return (rand() / (RAND_MAX + 1.0)); } // [0, 1)
-static vec random_vec() {
+__host__ static vec random_vec() {
     vec v = { random_double(), random_double(), random_double() };
     return v;
 }
-static vec random_in_unit_sphere() {
+__host__ static color random_color() { return random_vec(); }
+
+__device__ static sc d_random_double(curandState *d_randstate) { return curand_uniform_double(d_randstate); }
+__device__ static vec d_random_vec(curandState *d_randstate) {
+    vec v = { d_random_double(d_randstate), d_random_double(d_randstate), d_random_double(d_randstate) };
+    return v;
+}
+__device__ static vec d_random_in_unit_sphere(curandState *d_randstate) {
     while (1) {
-        vec v = random_vec();
+        vec v = d_random_vec(d_randstate);
         if (magsq(v) <= 1) return v;
     }
 }
-static vec random_unit_vector() { return normalize(random_in_unit_sphere()); }
-
-static color random_color() { return random_vec(); }
+__device__ static vec d_random_unit_vector(curandState *d_randstate) { return normalize(d_random_in_unit_sphere(d_randstate)); }
 
 /* Ray-tracing */
 
-static color BLACK = {0, 0, 0};
-static color WHITE = {1.0, 1.0, 1.0};
-static color BLUE = {0.25, 0.49, 1.0};
+__device__ static color BLACK = {0, 0, 0};
+__device__ static color WHITE = {1.0, 1.0, 1.0};
+__device__ static color BLUE = {0.25, 0.49, 1.0};
 
-static vec reflect(vec incoming, vec normal) {
+__device__ static vec reflect(vec incoming, vec normal) {
     return sub(incoming, scale(normal, dot(incoming,normal)*2));
 }
 
-static int find_nearest_intersection(ray rr, sphere ss, sc *intersection) {
+__device__ static int find_nearest_intersection(ray rr, sphere ss, sc *intersection) {
   vec center_rel = sub(rr.start, ss.cp);
   // Quadratic coefficients of parametric intersection equation.  a == 1.
   sc b = 2*dot(center_rel, rr.dir), c = magsq(center_rel) - ss.r*ss.r;
@@ -70,21 +85,21 @@ static int find_nearest_intersection(ray rr, sphere ss, sc *intersection) {
   return 1;
 }
 
-static color ray_color(world here, ray rr)
+__device__ static color ray_color(curandState *randstate, const world *here, ray rr)
 {
   sc intersection;
   sc nearest_t;
-  sphere *nearest_object;
+  const sphere *nearest_object;
   color albedo = WHITE;
 
-  for (int depth = 0; depth < 50; depth++) {
+  for (int depth = 0; depth < MAX_BOUNCES; depth++) {
     nearest_object = 0;
     nearest_t = 1/.0;
-    for (int i = 0; i < here.nn; i++) {
-        if (find_nearest_intersection(rr, here.spheres[i], &intersection)) {
+    for (int i = 0; i < here->nn; i++) {
+        if (find_nearest_intersection(rr, here->spheres[i], &intersection)) {
         if (intersection < 0.000001 || intersection >= nearest_t) continue;
         nearest_t = intersection;
-        nearest_object = &here.spheres[i];
+        nearest_object = &here->spheres[i];
         }
     }
 
@@ -95,10 +110,10 @@ static color ray_color(world here, ray rr)
 
         ray bounce = { point };
         if (nearest_object->ma.reflectivity == 0) { // Matte, regular scattering
-            bounce.dir = add(normal, random_unit_vector());
+            bounce.dir = add(normal, d_random_unit_vector(randstate));
         } else { // Reflective metal scattering
             vec reflected = reflect(rr.dir, normal);
-            bounce.dir = add(reflected, scale(random_unit_vector(), nearest_object->ma.fuzz));
+            bounce.dir = add(reflected, scale(d_random_unit_vector(randstate), nearest_object->ma.fuzz));
             if (dot(bounce.dir, normal) < 0) return BLACK;
         }
         if (magsq(bounce.dir) < 0.0000001) return BLACK;
@@ -130,7 +145,8 @@ encode_color(color co)
 
 /* Rendering */
 
-static ray get_ray(int w, int h, int x, int y) {
+
+__device__ static ray get_ray(curandState *randstate, int w, int h, int x, int y) {
   // Camera is always at 0,0
   sc aspect = ((sc)w)/h; // Assume aspect >= 1
   sc viewport_height = 2.0;
@@ -142,8 +158,8 @@ static ray get_ray(int w, int h, int x, int y) {
   sc left = viewport_width / -2.0;
   sc top = viewport_height / 2.0;
 
-  sc px = left + (pixel_width * (x + random_double()));
-  sc py = top - (pixel_height * (y + random_double()));
+  sc px = left + (pixel_width * (x + d_random_double(randstate)));
+  sc py = top - (pixel_height * (y + d_random_double(randstate)));
 
   vec pv = { px, py, focal_length };
   ray rr = { {0}, normalize(pv) };
@@ -151,18 +167,51 @@ static ray get_ray(int w, int h, int x, int y) {
   return rr;
 }
 
-static void render(world here, int w, int h, int samples_per_pixel)
+__device__ static void render_pixel(curandState *randstate, const world *here, int w, int h, int samples, int x, int y, color *result)
 {
+  color pixel_color = {0, 0, 0};
+  for (int sample = 0; sample < samples; ++sample) {
+    ray rr = get_ray(randstate, w, h, x, y);
+    pixel_color = add(pixel_color, ray_color(randstate, here, rr));
+  }
+  *result = pixel_color;
+}
+
+__global__ void render_pixels(curandState *randstate, const world *here, int w, int h, int samples, color *result)
+{
+  int idx = threadIdx.x + blockDim.x*blockIdx.x;
+  if (idx >= PIXELS) return;
+  int x = idx % W;
+  int y = idx / W;
+
+  render_pixel(randstate, here, w, h, samples, x, y, &result[y*W+x]);
+}
+
+static void render(curandState *d_randstate,
+                   world *h_here, int w, int h, int samples_per_pixel)
+{
+  // Copy the world to the GPU
+  world *d_here;
+  cudaMalloc(&d_here, sizeof(world));
+  cudaMemcpy(d_here, h_here, sizeof(world), cudaMemcpyHostToDevice);
+
+  // Allocate space for the result
+  color *d_result;
+  color *h_result = (color *)malloc(sizeof(color)*PIXELS);
+  cudaMalloc(&d_result, sizeof(color)*PIXELS);
+
+  // Calculate the pixels
+  render_pixels<<<BLOCKS, THREADS>>>(d_randstate, d_here, w, h, samples_per_pixel, d_result);
+  cudaMemcpy(h_result, d_result, PIXELS * sizeof(color), cudaMemcpyDeviceToHost);
+
+  // Print PPM
   output_header(w, h);
-  for (int i = 0; i < h; i++)
-    for (int j = 0; j < w; j++) {
-      color pixel_color = {0, 0, 0};
-      for (int sample = 0; sample < samples_per_pixel; ++sample) {
-        ray rr = get_ray(w, h, j, i);
-        pixel_color = add(pixel_color, ray_color(here, rr));
-      }
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      color pixel_color = h_result[y*W+x];
       encode_color(scale(pixel_color, 1.0/samples_per_pixel));
     }
+  }
 }
 
 // Ground
@@ -172,7 +221,7 @@ sphere sphere1 = { .cp = {-2, 1.0,   5}, .ma = { .albedo = {0.7, 0.7, 0.7}, .ref
 // Sphere 2, matte brown
 sphere sphere2 = { .cp = {0,  1.0, 5},   .ma = { .albedo = {0.4, 0.2, 0.1} }, .r = 1 };
 // Sphere 3, reflective
-sphere sphere3 = { .cp = {2, 1.0, 5},    .ma = { .albedo = {0.5, 0.5, 0.5}, .reflectivity = 1.0, }, .r = 1 };
+sphere sphere3 = { .cp = {2,  1.0, 5},    .ma = { .albedo = {0.5, 0.5, 0.5}, .reflectivity = 1.0, }, .r = 1 };
 void scene(world *here) {
   sc ALT = -2.0;
   sc RAD = 0.2;
@@ -187,11 +236,11 @@ void scene(world *here) {
       // Add a sphere
       sphere *s = &here->spheres[here->nn++];
       s->cp.x = a + 0.9*random_double();
-      s->cp.y = ALT + RAD;
+      s->cp.y = RAD;
       s->cp.z = b + 0.9*random_double();
       s->r = RAD;
-      s->ma.reflectivity = random_double() > 0.8;
       s->ma.albedo = random_color();
+      s->ma.reflectivity = random_double() > 0.8;
       s->ma.fuzz = random_double();
     }
   }
@@ -200,14 +249,17 @@ void scene(world *here) {
 }
 
 int main(int argc, char **argv) {
-  sphere ss[30];
-  world here = { ss, 0 };
+  curandState *d_randstate;
+  cudaMalloc(&d_randstate, sizeof(curandState));
+  setup_kernel<<<1,W>>>(d_randstate);
+
+  world here = {0};
   scene(&here);
 
   clock_t start, stop;
   start = clock();
-  render(here, W, H, S);
+  render(d_randstate, &here, W, H, SAMPLES);
   stop = clock();
-  fprintf(stderr, "Render: %ldms\n", (stop-start)/1000);
+  fprintf(stderr, "Render: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
   return 0;
 }
