@@ -10,23 +10,24 @@
 #define H 600
 #define MAX_OBJECTS 30
 #define SAMPLES 100
-#define MAX_BOUNCES 50
+#define MAX_BOUNCES 5
 #define PIXELS (W*H)
-#define THREADS 100
+#define THREADS 256
 #define BLOCKS (ceil(PIXELS * 1.0) / THREADS)
 
 /* Types */
 typedef double sc; // scalar
 typedef struct { sc x, y, z; } vec;
+typedef struct { unsigned char r, g, b; } pix;
 
 /* Vectors */
-__host__ __device__ inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
-__host__ __device__ inline static sc magsq(vec vv)         { return dot(vv, vv); }
-__host__ __device__ inline static vec scale(vec vv, sc c)  { vec rv = { vv.x*c, vv.y*c, vv.z*c }; return rv; }
-__host__ __device__ inline static vec normalize(vec vv)    { return scale(vv, 1/sqrt(dot(vv, vv))); }
-__host__ __device__ inline static vec add(vec aa, vec bb)  { vec rv = { aa.x+bb.x, aa.y+bb.y, aa.z+bb.z }; return rv; }
-__host__ __device__ inline static vec sub(vec aa, vec bb)  { return add(aa, scale(bb, -1)); }
-__host__ __device__ inline static vec hadamard_product(vec aa, vec bb) { vec rv = { aa.x*bb.x, aa.y*bb.y, aa.z*bb.z }; return rv; }
+__device__ inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
+__device__ inline static sc magsq(vec vv)         { return dot(vv, vv); }
+__device__ inline static vec scale(vec vv, sc c)  { vec rv = { vv.x*c, vv.y*c, vv.z*c }; return rv; }
+__device__ inline static vec normalize(vec vv)    { return scale(vv, rnorm3d(vv.x, vv.y, vv.z)); }
+__device__ inline static vec add(vec aa, vec bb)  { vec rv = { aa.x+bb.x, aa.y+bb.y, aa.z+bb.z }; return rv; }
+__device__ inline static vec sub(vec aa, vec bb)  { return add(aa, scale(bb, -1)); }
+__device__ inline static vec hadamard_product(vec aa, vec bb) { vec rv = { aa.x*bb.x, aa.y*bb.y, aa.z*bb.z }; return rv; }
 
 /* Ray-tracing types */
 typedef vec color;              // So as to reuse dot(vv,vv) and scale
@@ -95,6 +96,7 @@ __device__ static color ray_color(curandState *randstate, const world *here, ray
   for (int depth = 0; depth < MAX_BOUNCES; depth++) {
     nearest_object = 0;
     nearest_t = 1/.0;
+
     for (int i = 0; i < here->nn; i++) {
         if (find_nearest_intersection(rr, here->spheres[i], &intersection)) {
         if (intersection < 0.000001 || intersection >= nearest_t) continue;
@@ -107,13 +109,14 @@ __device__ static color ray_color(curandState *randstate, const world *here, ray
         // Object color
         vec point = add(rr.start, scale(rr.dir, nearest_t));
         vec normal = normalize(sub(point, nearest_object->cp));
+        vec dir = d_random_unit_vector(randstate);
 
         ray bounce = { point };
         if (nearest_object->ma.reflectivity == 0) { // Matte, regular scattering
-            bounce.dir = add(normal, d_random_unit_vector(randstate));
+            bounce.dir = add(normal, dir);
         } else { // Reflective metal scattering
             vec reflected = reflect(rr.dir, normal);
-            bounce.dir = add(reflected, scale(d_random_unit_vector(randstate), nearest_object->ma.fuzz));
+            bounce.dir = add(reflected, scale(dir, nearest_object->ma.fuzz));
             if (dot(bounce.dir, normal) < 0) return BLACK;
         }
         if (magsq(bounce.dir) < 0.0000001) return BLACK;
@@ -136,12 +139,12 @@ static void
 output_header(int w, int h)
 { printf("P6\n%d %d\n255\n", w, h); }
 
-static unsigned char
+__device__ static unsigned char
 byte(double dd) { return dd > 1 ? 255 : dd < 0 ? 0 : dd * 255 + 0.5; }
 
 static void
-encode_color(color co)
-{ putchar(byte(sqrt(co.x))); putchar(byte(sqrt(co.y))); putchar(byte(sqrt(co.z))); }
+encode_color(pix p)
+{ putchar(p.r); putchar(p.g); putchar(p.b); }
 
 /* Rendering */
 
@@ -167,17 +170,19 @@ __device__ static ray get_ray(curandState *randstate, int w, int h, int x, int y
   return rr;
 }
 
-__device__ static void render_pixel(curandState *randstate, const world *here, int w, int h, int samples, int x, int y, color *result)
+__device__ static void render_pixel(curandState *randstate, const world *here, int w, int h, int samples, int x, int y, pix *result)
 {
   color pixel_color = {0, 0, 0};
   for (int sample = 0; sample < samples; ++sample) {
     ray rr = get_ray(randstate, w, h, x, y);
     pixel_color = add(pixel_color, ray_color(randstate, here, rr));
   }
-  *result = pixel_color;
+  pixel_color = scale(pixel_color, 1.0/samples);
+  pix p = { byte(sqrt(pixel_color.x)), byte(sqrt(pixel_color.y)), byte(sqrt(pixel_color.z)) }; 
+  *result = p;
 }
 
-__global__ void render_pixels(curandState *randstate, const world *here, int w, int h, int samples, color *result)
+__global__ void render_pixels(curandState *randstate, const world *here, int w, int h, int samples, pix *result)
 {
   // COPY world + randstate
 
@@ -195,28 +200,40 @@ __global__ void render_pixels(curandState *randstate, const world *here, int w, 
 static void render(curandState *d_randstate,
                    world *h_here, int w, int h, int samples_per_pixel)
 {
+  clock_t start, stop;
+  start = clock();
+
   // Copy the world to the GPU
   world *d_here;
   cudaMalloc(&d_here, sizeof(world));
   cudaMemcpy(d_here, h_here, sizeof(world), cudaMemcpyHostToDevice);
 
   // Allocate space for the result
-  color *d_result;
-  color *h_result = (color *)malloc(sizeof(color)*PIXELS);
-  cudaMalloc(&d_result, sizeof(color)*PIXELS);
+  pix *d_result;
+  pix *h_result = (pix *)malloc(sizeof(color)*PIXELS);
+  cudaMalloc(&d_result, sizeof(pix)*PIXELS);
+
+  stop = clock();
+  //fprintf(stderr, "Alloc: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
+  start = stop;
 
   // Calculate the pixels
   render_pixels<<<BLOCKS, THREADS>>>(d_randstate, d_here, w, h, samples_per_pixel, d_result);
-  cudaMemcpy(h_result, d_result, PIXELS * sizeof(color), cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_result, d_result, PIXELS * sizeof(pix), cudaMemcpyDeviceToHost);
+
+  stop = clock();
+  fprintf(stderr, "Render: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
+  start = stop;
 
   // Print PPM
   output_header(w, h);
-  for (int y = 0; y < h; y++) {
-    for (int x = 0; x < w; x++) {
-      color pixel_color = h_result[y*W+x];
-      encode_color(scale(pixel_color, 1.0/samples_per_pixel));
-    }
-  }
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++)
+      encode_color(h_result[y*W+x]);
+
+  stop = clock();
+  //fprintf(stderr, "PPM: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
+  start = stop;
 }
 
 // Ground
@@ -261,10 +278,6 @@ int main(int argc, char **argv) {
   world here = {0};
   scene(&here);
 
-  clock_t start, stop;
-  start = clock();
   render(d_randstate, &here, W, H, SAMPLES);
-  stop = clock();
-  fprintf(stderr, "Render: %ldms (%0.1f fps)\n", (stop-start)/1000, 1000000.0/(stop-start));
   return 0;
 }
