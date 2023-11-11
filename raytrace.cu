@@ -18,8 +18,11 @@ extern "C" {
 #define PIXELS (W*H)
 #define THREADS 256
 #define BLOCKS (ceil(PIXELS * 1.0) / THREADS)
+#define OUTFILE "raytrace-400x300.mkv"
+// Only affects the video file output--rendered output is always as fast as possible.
+#define FRAMERATE 30
 
-#define ZOOM 1
+#define ZOOM 3
 
 /* Types */
 typedef double sc; // scalar
@@ -180,7 +183,7 @@ __global__ void render_pixels(curandState *randstate, const world *here, pix *re
   }
 }
 
-static void render(curandState *d_randstate, world *h_here, ypic fb)
+static void render(curandState *d_randstate, world *h_here, ypic fb, FILE *rgb24_stream)
 {
   // Copy the world to the GPU
   world *d_here;
@@ -207,6 +210,16 @@ static void render(curandState *d_randstate, world *h_here, ypic fb)
           //memcpy(r, p, 4); // Undefined behavior
         }
       }
+    }
+  }
+
+  // Render to stream
+  for (int yy=0; yy<H; ++yy) {
+    for (int xx=0; xx<W; ++xx) {
+      pix *p = &h_result[yy*W+xx];
+      fputc(p->r, rgb24_stream);
+      fputc(p->g, rgb24_stream);
+      fputc(p->b, rgb24_stream);
     }
   }
 }
@@ -246,20 +259,29 @@ void scene(world *here) {
 }
 
 int main(int argc, char **argv) {
+  // Set up CUDA
   curandState *d_randstate;
   cudaMalloc(&d_randstate, sizeof(curandState)*THREADS);
   setup_kernel<<<1, 1024>>>(d_randstate);
 
+  // Set up world
   world here = {0};
   scene(&here);
 
+  // Set up yeso
   ywin w = yw_open("raytracer in yeso and CUDA", W*ZOOM, H*ZOOM, "");
-  clock_t start = clock(), stop;
-  start = clock();
 
-  for (int frame=1; frame < 1000; ++frame) {
+  // Set up video output (via ffmpeg)
+  char CMD[1000];
+  sprintf(CMD, "ffmpeg -f rawvideo -pix_fmt rgb24 -r %d -s:v %dx%d -loglevel 16 -i - -c:v libx264 -preset veryslow -crf 0 -pix_fmt yuv444p -y -- %s", FRAMERATE, W, H, OUTFILE);
+  FILE *stream = popen(CMD, "w");
+
+  // Set up fps timer
+  clock_t start = clock(), stop;
+
+  for (int frame=1; frame <= 600; ++frame) {
     ypic fb = yw_frame(w);
-    render(d_randstate, &here, fb);
+    render(d_randstate, &here, fb, stream);
     yw_flip(w);
     for (int i=0; i<here.nn; i++) {
       here.spheres[i].cp.y -= 0.005;
@@ -269,5 +291,7 @@ int main(int argc, char **argv) {
     if (!(frame & 0xff))
       fprintf(stderr, "Render: %ldms (%0.1f fps)\n", us/1000, 1000000.0/us);
   }
+
+  fclose(stream);
   return 0;
 }
