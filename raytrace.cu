@@ -19,12 +19,12 @@ extern "C" {
 #define THREADS 256
 #define BLOCKS (ceil(PIXELS * 1.0) / THREADS)
 
-#define ZOOM 3
+#define ZOOM 1
 
 /* Types */
 typedef double sc; // scalar
 typedef struct { sc x, y, z; } vec;
-typedef struct { unsigned char a, r, g, b; } pix;
+typedef struct { unsigned char b, g, r, a; } pix;
 
 /* Vectors */
 __device__ inline static sc dot(vec aa, vec bb)   { return aa.x*bb.x + aa.y*bb.y + aa.z*bb.z; }
@@ -64,9 +64,9 @@ __device__ static vec d_random_unit_vector(curandState *d_randstate) { return no
 
 /* Ray-tracing */
 
-__device__ static color BLACK = {0, 0, 0};
-__device__ static color WHITE = {1.0, 1.0, 1.0};
-__device__ static color BLUE = {0.25, 0.49, 1.0};
+__device__ static color BLACK = {0,    0,    0  };
+__device__ static color WHITE = {1.0,  1.0,  1.0};
+__device__ static color BLUE =  {0.25, 0.49, 1.0};
 
 __device__ static vec reflect(vec incoming, vec normal) {
     return sub(incoming, scale(normal, dot(incoming,normal)*2));
@@ -161,7 +161,7 @@ __device__ static pix render_pixel(curandState *randstate, const world *here, in
     pixel_color = add(pixel_color, ray_color(randstate, here, rr));
   }
   pixel_color = scale(pixel_color, 1.0/SAMPLES);
-  pix p = { byte(sqrt(pixel_color.x)), byte(sqrt(pixel_color.y)), byte(sqrt(pixel_color.z)) }; 
+  pix p = { .b = byte(sqrt(pixel_color.z)), .g = byte(sqrt(pixel_color.y)), .r = byte(sqrt(pixel_color.x)), .a = 0, }; 
   return p;
 }
 
@@ -196,11 +196,15 @@ static void render(curandState *d_randstate, world *h_here, ypic fb)
   pix *h_result = (pix *)malloc(sizeof(color)*PIXELS);
   cudaMemcpy(h_result, d_result, PIXELS * sizeof(pix), cudaMemcpyDeviceToHost);
 
+  // Render to yeso
   for (int yy=0; yy<H; ++yy) {
     for (int ii=0; ii<ZOOM; ++ii) {
       for (int xx=0; xx<W; ++xx) {
         for (int jj=0; jj<ZOOM; ++jj) {
-          memcpy(yp_pix(fb, ZOOM*xx+jj, ZOOM*yy+ii), &h_result[yy*W+xx], 4);
+          pix *p = &h_result[yy*W+xx];
+          ypix *r = yp_pix(fb, ZOOM*xx+jj, ZOOM*yy+ii);
+          *r = (p->b) | (p->g << 8) | (p->r << 16);
+          //memcpy(r, p, 4); // Undefined behavior
         }
       }
     }
@@ -252,7 +256,8 @@ int main(int argc, char **argv) {
   ywin w = yw_open("raytracer in yeso and CUDA", W*ZOOM, H*ZOOM, "");
   clock_t start = clock(), stop;
   start = clock();
-  for (int frame=0; frame < 1000; ++frame) {
+
+  for (int frame=1; frame < 1000; ++frame) {
     ypic fb = yw_frame(w);
     render(d_randstate, &here, fb);
     yw_flip(w);
