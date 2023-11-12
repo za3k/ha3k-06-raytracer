@@ -13,16 +13,17 @@ extern "C" {
 #define W 400
 #define H 300
 #define MAX_OBJECTS 30
-#define SAMPLES 40
+#define SAMPLES 1
 #define MAX_BOUNCES 5
 #define PIXELS (W*H)
 #define THREADS 256
 #define BLOCKS (ceil(PIXELS * 1.0) / THREADS)
-#define OUTFILE "raytrace-400x300.mkv"
+#define OUTFILE "raytrace-200x150.mkv"
+#define OUTPUT_VIDEO 1
 // Only affects the video file output--rendered output is always as fast as possible.
-#define FRAMERATE 30
+#define FRAMERATE 60
 
-#define ZOOM 3
+#define ZOOM 4
 
 /* Types */
 typedef double sc; // scalar
@@ -207,19 +208,20 @@ static void render(curandState *d_randstate, world *h_here, ypic fb, FILE *rgb24
           pix *p = &h_result[yy*W+xx];
           ypix *r = yp_pix(fb, ZOOM*xx+jj, ZOOM*yy+ii);
           *r = (p->b) | (p->g << 8) | (p->r << 16);
-          //memcpy(r, p, 4); // Undefined behavior
         }
       }
     }
   }
 
   // Render to stream
-  for (int yy=0; yy<H; ++yy) {
-    for (int xx=0; xx<W; ++xx) {
-      pix *p = &h_result[yy*W+xx];
-      fputc(p->r, rgb24_stream);
-      fputc(p->g, rgb24_stream);
-      fputc(p->b, rgb24_stream);
+  if (rgb24_stream) {
+    for (int yy=0; yy<H; ++yy) {
+      for (int xx=0; xx<W; ++xx) {
+        pix *p = &h_result[yy*W+xx];
+        fputc(p->r, rgb24_stream);
+        fputc(p->g, rgb24_stream);
+        fputc(p->b, rgb24_stream);
+      }
     }
   }
 }
@@ -274,7 +276,7 @@ int main(int argc, char **argv) {
   // Set up video output (via ffmpeg)
   char CMD[1000];
   sprintf(CMD, "ffmpeg -f rawvideo -pix_fmt rgb24 -r %d -s:v %dx%d -loglevel 16 -i - -c:v libx264 -preset veryslow -crf 0 -pix_fmt yuv444p -y -- %s", FRAMERATE, W, H, OUTFILE);
-  FILE *stream = popen(CMD, "w");
+  FILE *stream = OUTPUT_VIDEO ? popen(CMD, "w") : 0;
 
   // Set up fps timer
   clock_t start = clock(), stop;
